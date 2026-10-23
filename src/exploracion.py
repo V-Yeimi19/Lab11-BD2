@@ -1,16 +1,16 @@
 
 from pathlib import Path
 import sys
-
 import numpy as np
 import pandas as pd
+from data.dataset import X, y
 
-# Permite ejecutar el archivo directamente con `python src/exploracion.py`.
+# Ejecutar `python src/exploracion.py`.
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from data.dataset import X, y
+
 
 
 def construir_dataset() -> pd.DataFrame:
