@@ -1,116 +1,68 @@
-import os
-import glob
+import os, glob
 import pandas as pd
 import face_recognition
 import psycopg2
 from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
 
-DATASET_PATH = r"D:\Descargas\Lab11_pgvector\lfw_funneled"
+DATASET_PATH = os.getenv("LFW_PATH", r"D:\Descargas\Lab11_pgvector\lfw_funneled")
 
-coleccion = pd.DataFrame([
-    {
-        "person": os.path.basename(os.path.dirname(p)),
-        "path": p
-    }
-    for p in glob.iglob(
-        os.path.join(DATASET_PATH, "**", "*.jpg"),
-        recursive=True
-    )
-])
+imagenes = list(glob.iglob(os.path.join(DATASET_PATH, "**", "*.jpg"), recursive=True))
+
+coleccion = pd.DataFrame(
+    [{"person": os.path.basename(os.path.dirname(p)), "path": p} for p in imagenes]
+)
 
 print("Cantidad de imágenes:", len(coleccion))
 print(coleccion.head())
 
-def generate_face_embeddings(coleccion, n):
+
+def extraer_embeddings(coleccion_df, n):
     resultados = []
-
-    for _, fila in coleccion.head(n).iterrows():
-        image = face_recognition.load_image_file(fila["path"])
-        encodings = face_recognition.face_encodings(image)
-
-        if encodings:
-            embedding = encodings[0]
-            resultados.append(
-                (
-                    fila["person"],
-                    fila["path"],
-                    embedding
-                )
-            )
-
+    for _, fila in coleccion_df.head(n).iterrows():
+        imagen = face_recognition.load_image_file(fila["path"])
+        codificaciones = face_recognition.face_encodings(imagen)
+        if codificaciones:
+            resultados.append((fila["person"], fila["path"], codificaciones[0]))
     return resultados
 
-prueba = generate_face_embeddings(coleccion, 10)
 
-print("Rostros detectados:", len(prueba))
+print(f"Rostros detectados: {len(extraer_embeddings(coleccion, 10))}")
+primer = extraer_embeddings(coleccion, 1)[0]
+print("Persona:", primer[0])
+print("Ruta:", primer[1])
+print("Dimensión del embedding:", len(primer[2]))
 
-if prueba:
-    print("Persona:", prueba[0][0])
-    print("Ruta:", prueba[0][1])
-    print("Dimensión del embedding:", len(prueba[0][2]))
+conteos = coleccion["person"].value_counts()
+personas_validas = conteos[conteos >= 2].index
+candidatos = coleccion[coleccion["person"].isin(personas_validas)].copy()
 
-conteos = coleccion["person"].value_counts()                 # Cuenta cuántas fotos tiene cada persona
+consultas_reservadas = candidatos.sample(n=100, random_state=123)
+coleccion_bd = candidatos.drop(consultas_reservadas.index)
 
-personas_validas = conteos[conteos >= 2].index             # Conserva solo personas que tienen al menos 2 fotos
+consultas_reservadas.to_csv("consultas_reservadas.csv", index=False)
+print("Consultas reservadas: 100")
+print("Imágenes restantes para BD:", len(coleccion_bd))
 
-candidatos_consulta = coleccion[
-    coleccion["person"].isin(personas_validas)
-]                                                           # Filtra las imágenes pertenecientes a esas personas
-
-consultas = candidatos_consulta.sample(
-    n=100,
-    random_state=42
-)                                                           # Selecciona 100 imágenes aleatorias y reproducibles
-
-consultas.to_csv(
-    "consultas_reservadas.csv",
-    index=False
-)                                                           # Guarda esas 100 consultas para usarlas después en P4
-
-coleccion_para_bd = coleccion.drop(
-    consultas.index
-)                                                           # Elimina esas 100 imágenes de la colección que irá a PostgreSQL
-
-print("Consultas reservadas:", len(consultas))
-print("Imágenes restantes para BD:", len(coleccion_para_bd))
+embeddings = extraer_embeddings(coleccion_bd, len(coleccion_bd))
+print("Embeddings generados:", len(embeddings))
 
 conn = psycopg2.connect(
-    host="localhost",
-    port=5434,
-    user="postgres",
-    password="root",
-    dbname="postgres"
+    host=os.getenv("PGHOST", "localhost"),
+    port=int(os.getenv("PGPORT", "5434")),
+    user=os.getenv("PGUSER", "postgres"),
+    password=os.getenv("PGPASSWORD", "root"),
+    dbname=os.getenv("PGDATABASE", "postgres"),
 )
-
 conn.autocommit = True
+register_vector(conn)
 cur = conn.cursor()
 
 cur.execute("TRUNCATE TABLE face_embeddings RESTART IDENTITY")
 
-registros = generate_face_embeddings(
-    coleccion_para_bd,
-    len(coleccion_para_bd)
-)
+datos = [(e[0], e[1], e[2]) for e in embeddings]
+execute_values(cur, "INSERT INTO face_embeddings (name, path, embedding) VALUES %s", datos)
 
-print("Embeddings generados:", len(registros))
-
-execute_values(
-    cur,
-    """
-    INSERT INTO face_embeddings
-    (name, path, embedding)
-    VALUES %s
-    """,
-    registros
-)
-
-cur.execute("SELECT COUNT(*) FROM face_embeddings")
-
-print(
-    "Embeddings guardados:",
-    cur.fetchone()[0]
-)
-
+print("Embeddings guardados:", len(datos))
 cur.close()
 conn.close()

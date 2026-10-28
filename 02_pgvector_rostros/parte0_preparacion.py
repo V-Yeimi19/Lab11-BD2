@@ -1,165 +1,109 @@
-"""Parte 0: carga y observación del dataset LFW (Laboratorio 11 - pgvector).
-
-Escanea una carpeta local con fotos LFW, arma la colección ``person``/``path``
-y permite observar una grilla de fotos.
-
-Uso:
-    python 02_pgvector_rostros/parte0_preparacion.py <ruta_lfw>
-        [--n 16] [--posiciones 0 2 5] [--aleatorio] [--semilla 42]
-        [--salida grid.png] [--mostrar]
-"""
-
 from __future__ import annotations
 
 import argparse
-import glob
+import math
 import os
-import sys
+import random
+from pathlib import Path
 
-import matplotlib
-
-# Backend sin pantalla cuando solo se guarda el PNG; si se pide --mostrar se
-# deja el backend interactivo por defecto (macosx/TkAgg).
-if "--mostrar" not in sys.argv:
-    matplotlib.use("Agg")
-
+import face_recognition
 import matplotlib.pyplot as plt
-import pandas as pd
+from PIL import Image
 
 
-def cargar_coleccion(ruta_dataset: str) -> pd.DataFrame:
-    """Escanea ``ruta_dataset/**/*.jpg`` y devuelve un DataFrame person/path."""
-    ruta = os.path.abspath(os.path.expanduser(ruta_dataset))
-    if not os.path.isdir(ruta):
-        raise NotADirectoryError(f"No existe la carpeta del dataset: {ruta}")
-
-    registros = [
-        {
-            "person": os.path.basename(os.path.dirname(archivo)),
-            "path": archivo,
-        }
-        for archivo in glob.iglob(os.path.join(ruta, "**", "*.jpg"), recursive=True)
-    ]
-    return pd.DataFrame(registros, columns=["person", "path"])
-
-
-def resumen(coleccion: pd.DataFrame) -> None:
-    """Imprime cantidad de fotos, personas y distribución fotos/persona."""
-    total = len(coleccion)
-    personas = coleccion["person"].nunique()
-    print(f"Imágenes encontradas: {total:,}")
-    print(f"Personas distintas: {personas:,}")
-    if total:
-        por_persona = coleccion.groupby("person").size()
-        print(
-            "Fotos por persona: "
-            f"min={por_persona.min()}, "
-            f"mediana={por_persona.median():.0f}, "
-            f"max={por_persona.max()}"
-        )
-        print(f"Personas con una sola foto: {(por_persona == 1).sum():,}")
-
-
-def seleccionar_posiciones(
-    coleccion: pd.DataFrame,
-    n: int,
-    posiciones: list[int] | None = None,
-    aleatorio: bool = False,
-    semilla: int | None = None,
-) -> list[int]:
-    """Devuelve los índices de las fotos a mostrar."""
-    total = len(coleccion)
-    if not total:
-        raise ValueError("No hay imágenes para mostrar.")
-    if posiciones:
-        invalidas = [p for p in posiciones if not 0 <= p < total]
-        if invalidas:
-            raise IndexError(
-                f"Posiciones fuera de rango (0..{total - 1}): {invalidas}"
-            )
-        return posiciones
-    if aleatorio:
-        muestra = coleccion.sample(n=min(n, total), random_state=semilla)
-        return muestra.index.tolist()
-    return list(range(min(n, total)))
+def cargar_imagenes(carpeta: str | Path, extension: str = ".jpg") -> list[Path]:
+    carpeta = Path(carpeta)
+    if not carpeta.is_dir():
+        raise FileNotFoundError(f"No existe la carpeta del dataset: {carpeta}")
+    imagenes = [p for p in carpeta.rglob(f"*{extension.lower()}")]
+    imagenes.extend([p for p in carpeta.rglob(f"*{extension.upper()}")])
+    return sorted(set(imagenes))
 
 
 def mostrar_fotos(
-    coleccion: pd.DataFrame,
-    posiciones: list[int],
-    salida: str | None = None,
+    coleccion,
+    indices,
+    salida: str | Path = "resultados.png",
     mostrar: bool = False,
-) -> None:
-    """Dibuja una grilla con las fotos indicadas y la guarda y/o muestra."""
-    if not posiciones:
-        raise ValueError("Debe indicar al menos una posición.")
+    titulos: list[str] | None = None,
+    columnas: int = 4,
+):
+    rutas = coleccion.iloc[indices]["path"].tolist()
+    personas = coleccion.iloc[indices]["person"].tolist()
 
-    columnas = 4
-    filas = (len(posiciones) + columnas - 1) // columnas
-    fig, ejes = plt.subplots(filas, columnas, figsize=(4 * columnas, 4 * filas))
+    n = len(rutas)
+    filas = math.ceil(n / columnas) if n else 1
+    fig, ejes = plt.subplots(filas, columnas, figsize=(columnas * 4, filas * 4))
     ejes = ejes.flatten() if hasattr(ejes, "flatten") else [ejes]
 
-    for eje, idx in zip(ejes, posiciones):
-        imagen = plt.imread(coleccion["path"].iloc[idx])
-        eje.imshow(imagen)
-        eje.set_title(
-            f"{coleccion['person'].iloc[idx]}\n{imagen.shape}", fontsize=8
-        )
-        eje.axis("off")
-    for eje in ejes[len(posiciones) :]:
-        eje.axis("off")
+    for i, (ruta, persona) in enumerate(zip(rutas, personas)):
+        ax = ejes[i]
+        try:
+            img = Image.open(ruta)
+            img_cara = face_recognition.load_image_file(ruta)
+            ubicaciones = face_recognition.face_locations(img_cara)
+            if ubicaciones:
+                top, right, bottom, left = ubicaciones[0]
+                margen = 20
+                top = max(0, top - margen)
+                left = max(0, left - margen)
+                bottom = min(img.height, bottom + margen)
+                right = min(img.width, right + margen)
+                img = img.crop((left, top, right, bottom))
+            ax.imshow(img)
+            if titulos and i < len(titulos):
+                ax.set_title(titulos[i], fontsize=8)
+            else:
+                ax.set_title(persona, fontsize=9)
+        except Exception as e:
+            ax.text(0.5, 0.5, f"Error\n{e}", ha="center", va="center")
+        ax.axis("off")
 
-    fig.tight_layout()
-    if salida:
-        fig.savefig(salida, dpi=150)
-        print(f"Grilla guardada en: {salida}")
+    for j in range(i + 1, len(ejes)):
+        ejes[j].axis("off")
+
+    plt.tight_layout()
+    salida = Path(salida)
+    salida.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(salida, dpi=150)
     if mostrar:
         plt.show()
-    plt.close(fig)
+    plt.close()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Parte 0: carga el dataset LFW y muestra fotos para observarlo."
-        )
-    )
-    parser.add_argument("ruta_dataset", help="Carpeta raíz del dataset LFW")
-    parser.add_argument(
-        "--n", type=int, default=16, help="Cuántas fotos mostrar (default: 16)"
-    )
-    parser.add_argument(
-        "--posiciones",
-        type=int,
-        nargs="+",
-        help="Índices exactos a mostrar (alternativa a --n)",
-    )
-    parser.add_argument(
-        "--aleatorio", action="store_true", help="Muestrear fotos al azar"
-    )
-    parser.add_argument(
-        "--semilla", type=int, help="Semilla para --aleatorio"
-    )
-    parser.add_argument("--salida", help="Guardar la grilla en un PNG")
-    parser.add_argument(
-        "--mostrar", action="store_true", help="Mostrar la grilla en pantalla"
-    )
+    parser = argparse.ArgumentParser(description="Muestra una grilla de rostros del dataset LFW")
+    parser.add_argument("carpeta", help="Carpeta con imágenes organizadas por persona")
+    parser.add_argument("-n", type=int, default=16, help="Número de imágenes a mostrar")
+    parser.add_argument("--aleatorio", action="store_true", help="Seleccionar aleatoriamente")
+    parser.add_argument("--semilla", type=int, default=42, help="Semilla para selección aleatoria")
+    parser.add_argument("--salida", default="grilla_lfw.png", help="Archivo de salida")
+    parser.add_argument("--mostrar", action="store_true", help="Mostrar en pantalla")
     args = parser.parse_args()
 
-    coleccion = cargar_coleccion(args.ruta_dataset)
-    resumen(coleccion)
+    import pandas as pd
 
-    # Solo se renderiza si se pidió guardar o mostrar.
-    if args.salida or args.mostrar:
-        posiciones = seleccionar_posiciones(
-            coleccion, args.n, args.posiciones, args.aleatorio, args.semilla
-        )
-        mostrar_fotos(coleccion, posiciones, args.salida, args.mostrar)
+    imagenes = cargar_imagenes(args.carpeta)
+    print(f"Imágenes encontradas: {len(imagenes):,}")
+    coleccion = pd.DataFrame(
+        [{"person": p.parent.name, "path": str(p)} for p in imagenes]
+    )
+    print(f"Personas distintas: {coleccion['person'].nunique():,}")
+    conteos = coleccion["person"].value_counts()
+    print(
+        f"Fotos por persona: min={conteos.min()}, mediana={conteos.median():.0f}, max={conteos.max()}"
+    )
+    print(f"Personas con una sola foto: {(conteos == 1).sum():,}")
+
+    if args.aleatorio:
+        random.seed(args.semilla)
+        indices = random.sample(range(len(coleccion)), min(args.n, len(coleccion)))
+    else:
+        indices = list(range(min(args.n, len(coleccion))))
+
+    mostrar_fotos(coleccion, indices, salida=args.salida, mostrar=args.mostrar)
+    print(f"Grilla guardada en: {args.salida}")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except (NotADirectoryError, IndexError, ValueError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+    main()

@@ -2,4 +2,7 @@
 .venv/
 __pycache__/
 *.pyc
-result/
+data/*.jpeg
+*.md
+.ruff_cache
+*.txt
