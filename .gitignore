@@ -2,7 +2,13 @@
 .venv/
 __pycache__/
 *.pyc
-data/*.jpeg
 *.md
 .ruff_cache
 *.txt
+
+# Imágenes específicas
+02_pgvector_rostros/result/*.png
+01_busqueda_numpy/data/*.png
+01_busqueda_numpy/data/*.jpeg
+01_busqueda_numpy/data/**/*.jpeg
+01_busqueda_numpy/data/**/*.png
